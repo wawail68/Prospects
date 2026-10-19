@@ -61,6 +61,18 @@ select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(-
 .acts .go{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600;text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center;border-radius:10px;min-height:44px}
 .acts .go.alt{background:var(--card);color:var(--ink);border:1px solid var(--line);font-weight:500}
 .acts .go.call{background:var(--ok);color:var(--accent-ink)}
+.note{grid-column:2;background:var(--bg);border-left:3px solid var(--accent);border-radius:6px;padding:6px 10px;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.quiet{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-top:12px;font-size:15px}
+.quiet input[type=time]{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;min-height:44px}
+.days{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.days label{display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;border:1px solid var(--line);border-radius:10px;cursor:pointer;font-weight:600;font-size:14px;position:relative}
+.days input{position:absolute;opacity:0;inset:0;cursor:pointer}
+.days label:has(input:checked){background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.days label:has(input:focus-visible){outline:3px solid var(--accent);outline-offset:2px}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);padding:16px;width:min(92vw,480px)}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+dialog h2{font:700 20px var(--display);margin:0 0 10px}
+dialog textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px;resize:vertical;margin-bottom:10px}
 .empty{padding:28px 8px;text-align:center;color:var(--muted)}
 #map{height:46vh;min-height:280px;border-radius:12px;border:1px solid var(--line);margin:10px 0}
 .pill{display:inline-block;font:600 12px var(--display);letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-radius:99px;border:1px solid currentColor}
@@ -90,6 +102,11 @@ footer{color:var(--muted);font-size:12px;margin-top:22px}
       <select id="selVoice"><option value="1" selected>Annonce vocale</option><option value="0">Silencieux</option></select>
     </label>
   </div>
+  <div class="quiet">
+    <label><input type="checkbox" id="quietOn"> Pas d'alerte entre</label>
+    <input type="time" id="quietFrom" aria-label="De"> et <input type="time" id="quietTo" aria-label="À">
+  </div>
+  <div class="days" id="daysBox" role="group" aria-label="Jours où les alertes sont actives"></div>
   <div class="naf" id="nafBox"></div>
   <div class="row" style="margin-top:12px">
     <button id="btnExport">Exporter ma base</button>
@@ -116,6 +133,18 @@ footer{color:var(--muted);font-size:12px;margin-top:22px}
 <footer>Source : Recherche d'entreprises (data.gouv.fr), données publiques. Ta base « déjà vus » reste sur ce téléphone.</footer>
 </div>
 
+<dialog id="dlgNote">
+  <form method="dialog">
+    <h2 id="noteTitle">Note</h2>
+    <textarea id="noteTxt" rows="6" placeholder="Ex. : gérant absent, repasser mardi matin"></textarea>
+    <div class="row">
+      <button value="save" class="primary">Enregistrer</button>
+      <button value="cancel">Annuler</button>
+      <button value="clear">Effacer la note</button>
+    </div>
+  </form>
+</dialog>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 (function(){
@@ -132,15 +161,18 @@ var NAFS=[
  ["43.99C","Maçonnerie générale et gros œuvre",false],
  ["43.39Z","Autres finitions",false]
 ];
-var KEY_DB="prospects.db.v1", KEY_SET="prospects.settings.v1", KEY_PH="prospects.phones.v1";
+var KEY_DB="prospects.db.v1", KEY_SET="prospects.settings.v1", KEY_PH="prospects.phones.v1", KEY_NT="prospects.notes.v1";
 var $=function(id){return document.getElementById(id)};
 
 function load(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 
+var notes=load(KEY_NT,{});              // siret -> note libre
 var phones=load(KEY_PH,{});             // siret -> numéro saisi
 var db=load(KEY_DB,{});                 // siret -> {s:"known"|"no"|"visit", n, c, t}
-var settings=load(KEY_SET,{radius:5,alert:500,voice:1,naf:["43.33Z"]});
+var settings=Object.assign({radius:5,alert:500,voice:1,naf:["43.33Z"],quietOn:false,quietFrom:"12:00",quietTo:"14:00",days:[1,2,3,4,5],alertVisit:true},load(KEY_SET,{}));
+var DAYS=[[1,"L","Lundi"],[2,"M","Mardi"],[3,"M","Mercredi"],[4,"J","Jeudi"],[5,"V","Vendredi"],[6,"S","Samedi"],[0,"D","Dimanche"]];
+var EFF={"00":"0 salarié","01":"1-2 salariés","02":"3-5 salariés","03":"6-9 salariés","11":"10-19 salariés","12":"20-49 salariés","21":"50-99 salariés","22":"100-199 salariés","31":"200-249 salariés","32":"250-499 salariés","41":"500-999 salariés","42":"1000-1999 salariés","51":"2000-4999 salariés","52":"5000-9999 salariés","53":"10000 salariés et plus"};
 var pos=null, lastFetch=null, watchId=null, wake=null, testMode=false;
 var cache={};                           // siret -> prospect
 var alerted={};
@@ -159,6 +191,8 @@ function drawSettings(){
   $("selRadius").value=String(settings.radius);
   $("selAlert").value=String(settings.alert);
   $("selVoice").value=String(settings.voice);
+  $("quietOn").checked=!!settings.quietOn; $("quietFrom").value=settings.quietFrom; $("quietTo").value=settings.quietTo;
+  $("daysBox").innerHTML=DAYS.map(function(d){return '<label title="'+d[2]+'"><input type="checkbox" data-day="'+d[0]+'"'+(settings.days.indexOf(d[0])>-1?" checked":"")+' aria-label="'+d[2]+'">'+d[1]+'</label>'}).join("");
   $("nafBox").innerHTML=NAFS.map(function(n){
     var on=settings.naf.indexOf(n[0])>-1;
     return '<label><input type="checkbox" data-naf="'+n[0]+'"'+(on?" checked":"")+'> <span>'+esc(n[1])+' <code>'+n[0]+'</code></span></label>';
@@ -169,6 +203,10 @@ function readSettings(){
   var boxes=document.querySelectorAll("[data-naf]"), l=[];
   for(var i=0;i<boxes.length;i++) if(boxes[i].checked) l.push(boxes[i].getAttribute("data-naf"));
   settings.naf=l.length?l:["43.33Z"];
+  settings.quietOn=$("quietOn").checked; settings.quietFrom=$("quietFrom").value||"12:00"; settings.quietTo=$("quietTo").value||"14:00";
+  var dd=document.querySelectorAll("[data-day]"), dl=[];
+  for(var j=0;j<dd.length;j++) if(dd[j].checked) dl.push(+dd[j].getAttribute("data-day"));
+  settings.days=dl;
   save(KEY_SET,settings);
 }
 
@@ -184,7 +222,9 @@ function toProspects(results){
       if(!isFinite(lat)||!isFinite(lon)) return;
       var nom=r.nom_complet||"Entreprise sans nom";
       if(r.statut_diffusion&&r.statut_diffusion!=="O") nom="Entreprise non diffusible";
-      out.push({id:e.siret,name:nom,com:e.nom_commercial||"",adr:e.adresse||"",ville:e.libelle_commune||e.commune||"",
+      var dg=(r.dirigeants||[])[0], dn="";
+      if(dg){ dn=dg.nom?(((dg.prenoms||"").split(/[ ,]/)[0]||"")+" "+dg.nom).trim():(dg.denomination||""); }
+      out.push({dir:dn,nbEt:r.nombre_etablissements_ouverts||0,effl:EFF[r.tranche_effectif_salarie]||"",id:e.siret,name:nom,com:e.nom_commercial||"",adr:e.adresse||"",ville:e.libelle_commune||e.commune||"",
         naf:e.activite_principale||r.activite_principale||"",eff:r.tranche_effectif_salarie,
         creat:e.date_debut_activite||r.date_creation||"",lat:lat,lon:lon});
     });
@@ -234,14 +274,17 @@ function cardHtml(x){
   if(!x.st) acts='<button class="primary" data-a="known" data-id="'+p.id+'">Je connais</button><button data-a="visit" data-id="'+p.id+'">À visiter</button><button data-a="no" data-id="'+p.id+'">Pas intéressant</button>';
   else if(x.st==="visit") acts='<button class="primary" data-a="known" data-id="'+p.id+'">Visité, je connais</button><button data-a="reset" data-id="'+p.id+'">Remettre dans la liste</button>';
   else acts='<button data-a="reset" data-id="'+p.id+'">Remettre dans la liste</button>';
+  var nt='<button data-a="note" data-id="'+p.id+'">'+(notes[p.id]?"Modifier la note":"Ajouter une note")+'</button>';
   var ph=phones[p.id], tel=ph?
     '<a class="go call" href="tel:'+esc(ph.replace(/[^\d+]/g,""))+'">Appeler '+esc(ph)+'</a><button data-a="phone" data-id="'+p.id+'">Modifier le n°</button>':
     '<button data-a="phone" data-id="'+p.id+'">Ajouter le n°</button><a class="go alt" href="https://www.google.com/search?q='+encodeURIComponent(p.name+" "+p.ville+" téléphone")+'" target="_blank" rel="noopener">Chercher le n°</a>';
   var pill=x.st?'<span class="pill '+x.st+'">'+({known:"Connu",no:"Écarté",visit:"À visiter"})[x.st]+'</span> ':"";
   return '<li class="card'+(near?" near":"")+'"><div class="dist">'+f[0]+'<small>'+f[1]+'</small></div>'+
     '<div class="name">'+pill+esc(p.name)+'</div>'+
-    '<div class="meta"><b>'+esc(p.ville)+'</b> · '+esc(p.adr)+'<br>Activité '+esc(p.naf)+(p.creat?" · depuis "+esc(String(p.creat).slice(0,4)):"")+'</div>'+
-    '<div class="acts"><a class="go" href="'+nav+'" target="_blank" rel="noopener">Itinéraire</a>'+tel+acts+'</div></li>';
+    '<div class="meta"><b>'+esc(p.ville)+'</b> · '+esc(p.adr)+'<br>Activité '+esc(p.naf)+(p.creat?" · depuis "+esc(String(p.creat).slice(0,4)):"")+
+    (p.dir?'<br>Dirigeant : <b>'+esc(p.dir)+'</b>':"")+(p.effl||p.nbEt>1?'<br>'+esc(p.effl)+(p.effl&&p.nbEt>1?" · ":"")+(p.nbEt>1?p.nbEt+" établissements":""):"")+'</div>'+
+    (notes[p.id]?'<div class="note">'+esc(notes[p.id])+'</div>':"")+
+    '<div class="acts"><a class="go" href="'+nav+'" target="_blank" rel="noopener">Itinéraire</a>'+tel+nt+acts+'</div></li>';
 }
 function render(){
   var all=visible();
@@ -286,6 +329,21 @@ function drawMap(all){
 }
 
 /* ---------- actions ---------- */
+function editNote(id){
+  var c=cache[id]||{}, d=$("dlgNote");
+  $("noteTitle").textContent="Note : "+(c.name||(db[id]&&db[id].n)||"prospect");
+  $("noteTxt").value=notes[id]||"";
+  d.onclose=function(){
+    var r=d.returnValue;
+    if(r==="save"){var v=$("noteTxt").value.trim(); if(v)notes[id]=v; else delete notes[id]}
+    else if(r==="clear"){delete notes[id]}
+    else return;
+    save(KEY_NT,notes); render();
+  };
+  d.returnValue="";
+  if(d.showModal) d.showModal();
+  else {var t=window.prompt("Note",notes[id]||"");if(t!==null){if(t.trim())notes[id]=t.trim();else delete notes[id];save(KEY_NT,notes);render()}}
+}
 function editPhone(id){
   var v=window.prompt("Numéro de téléphone (laisse vide pour l'effacer)",phones[id]||"");
   if(v===null) return; v=v.trim();
@@ -314,13 +372,24 @@ function speak(t){
     speechSynthesis.cancel();speechSynthesis.speak(u);
   }catch(e){}
 }
+function alertsAllowed(){
+  var n=new Date();
+  if(settings.days.indexOf(n.getDay())<0) return false;
+  if(settings.quietOn){
+    var m=n.getHours()*60+n.getMinutes(), a=settings.quietFrom.split(":"), b=settings.quietTo.split(":");
+    var f=+a[0]*60+ +a[1], t=+b[0]*60+ +b[1];
+    var inside=f<=t?(m>=f&&m<t):(m>=f||m<t);
+    if(inside) return false;
+  }
+  return true;
+}
 function checkAlerts(){
-  if(!pos) return;
-  var cand=visible().filter(function(x){return !x.st&&x.d<=settings.alert&&!alerted[x.p.id]});
+  if(!pos||!alertsAllowed()) return;
+  var cand=visible().filter(function(x){return (!x.st||(x.st==="visit"&&settings.alertVisit))&&x.d<=settings.alert&&!alerted[x.p.id]});
   if(!cand.length) return;
   var x=cand[0]; alerted[x.p.id]=1; cand.forEach(function(c){alerted[c.p.id]=1});
   var f=fmt(x.d), n=cand.length>1?(" et "+(cand.length-1)+" autre"+(cand.length>2?"s":"")):"";
-  var txt="Prospect à "+f[0]+(f[1]==="m"?" mètres":" kilomètres")+" : "+x.p.name+(x.p.ville?", "+x.p.ville:"")+n+".";
+  var txt=(x.st==="visit"?"Prospect à visiter à ":"Prospect à ")+f[0]+(f[1]==="m"?" mètres":" kilomètres")+" : "+x.p.name+(x.p.ville?", "+x.p.ville:"")+n+".";
   $("alertBox").innerHTML='<div class="alert" role="alert"><span>'+esc(txt)+'</span><button id="alertOk">Vu</button></div>';
   $("alertOk").onclick=function(){$("alertBox").innerHTML=""};
   try{if(navigator.vibrate)navigator.vibrate([200,100,200])}catch(e){}
@@ -356,16 +425,16 @@ $("btnTest").onclick=function(){
   if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}
   testMode=true;pos={lat:48.0794,lon:7.3585,acc:0};lastFetch=null;$("btnStart").textContent="Actualiser maintenant";fetchAround();
 };
-$("list").addEventListener("click",function(e){var b=e.target.closest("button[data-a]");if(!b) return; var a=b.getAttribute("data-a"), id=b.getAttribute("data-id"); if(a==="phone") editPhone(id); else mark(id,a)});
+$("list").addEventListener("click",function(e){var b=e.target.closest("button[data-a]");if(!b) return; var a=b.getAttribute("data-a"), id=b.getAttribute("data-id"); if(a==="phone") editPhone(id); else if(a==="note") editNote(id); else mark(id,a)});
 [["tabNear","near"],["tabVisit","visit"],["tabSeen","seen"],["tabMap","map"]].forEach(function(t){$(t[0]).onclick=function(){tab=t[1];render()}});
 $("btnExport").onclick=function(){
-  var blob=new Blob([JSON.stringify({db:db,phones:phones},null,1)],{type:"application/json"}),a=document.createElement("a");
+  var blob=new Blob([JSON.stringify({db:db,phones:phones,notes:notes},null,1)],{type:"application/json"}),a=document.createElement("a");
   a.href=URL.createObjectURL(blob);a.download="prospects-connus.json";document.body.appendChild(a);a.click();a.remove();
 };
 $("btnImport").onclick=function(){$("fileImport").click()};
 $("fileImport").onchange=function(){
   var f=this.files[0];if(!f)return;var r=new FileReader();
-  r.onload=function(){try{var o=JSON.parse(r.result), d=o.db||o, p=o.phones||{}, n=0;for(var k in d)if(d[k]&&d[k].s){db[k]=d[k];n++}for(var q in p)phones[q]=p[q];save(KEY_DB,db);save(KEY_PH,phones);render();say("Base importée : "+n+" prospect(s) et "+Object.keys(p).length+" numéro(s).")}catch(e){say("Fichier illisible.",true)}};
+  r.onload=function(){try{var o=JSON.parse(r.result), d=o.db||o, p=o.phones||{}, nn=o.notes||{}, n=0;for(var k in d)if(d[k]&&d[k].s){db[k]=d[k];n++}for(var q in p)phones[q]=p[q];for(var w in nn)notes[w]=nn[w];save(KEY_NT,notes);save(KEY_DB,db);save(KEY_PH,phones);render();say("Base importée : "+n+" prospect(s) et "+Object.keys(p).length+" numéro(s).")}catch(e){say("Fichier illisible.",true)}};
   r.readAsText(f);
 };
 

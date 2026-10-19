@@ -59,6 +59,8 @@ select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(-
 .meta b{color:var(--ink);font-weight:600}
 .acts{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:8px}
 .acts .go{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600;text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center;border-radius:10px;min-height:44px}
+.acts .go.alt{background:var(--card);color:var(--ink);border:1px solid var(--line);font-weight:500}
+.acts .go.call{background:var(--ok);color:var(--accent-ink)}
 .empty{padding:28px 8px;text-align:center;color:var(--muted)}
 #map{height:46vh;min-height:280px;border-radius:12px;border:1px solid var(--line);margin:10px 0}
 .pill{display:inline-block;font:600 12px var(--display);letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-radius:99px;border:1px solid currentColor}
@@ -130,12 +132,13 @@ var NAFS=[
  ["43.99C","Maçonnerie générale et gros œuvre",false],
  ["43.39Z","Autres finitions",false]
 ];
-var KEY_DB="prospects.db.v1", KEY_SET="prospects.settings.v1";
+var KEY_DB="prospects.db.v1", KEY_SET="prospects.settings.v1", KEY_PH="prospects.phones.v1";
 var $=function(id){return document.getElementById(id)};
 
 function load(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 
+var phones=load(KEY_PH,{});             // siret -> numéro saisi
 var db=load(KEY_DB,{});                 // siret -> {s:"known"|"no"|"visit", n, c, t}
 var settings=load(KEY_SET,{radius:5,alert:500,voice:1,naf:["43.33Z"]});
 var pos=null, lastFetch=null, watchId=null, wake=null, testMode=false;
@@ -231,11 +234,14 @@ function cardHtml(x){
   if(!x.st) acts='<button class="primary" data-a="known" data-id="'+p.id+'">Je connais</button><button data-a="visit" data-id="'+p.id+'">À visiter</button><button data-a="no" data-id="'+p.id+'">Pas intéressant</button>';
   else if(x.st==="visit") acts='<button class="primary" data-a="known" data-id="'+p.id+'">Visité, je connais</button><button data-a="reset" data-id="'+p.id+'">Remettre dans la liste</button>';
   else acts='<button data-a="reset" data-id="'+p.id+'">Remettre dans la liste</button>';
+  var ph=phones[p.id], tel=ph?
+    '<a class="go call" href="tel:'+esc(ph.replace(/[^\d+]/g,""))+'">Appeler '+esc(ph)+'</a><button data-a="phone" data-id="'+p.id+'">Modifier le n°</button>':
+    '<button data-a="phone" data-id="'+p.id+'">Ajouter le n°</button><a class="go alt" href="https://www.google.com/search?q='+encodeURIComponent(p.name+" "+p.ville+" téléphone")+'" target="_blank" rel="noopener">Chercher le n°</a>';
   var pill=x.st?'<span class="pill '+x.st+'">'+({known:"Connu",no:"Écarté",visit:"À visiter"})[x.st]+'</span> ':"";
   return '<li class="card'+(near?" near":"")+'"><div class="dist">'+f[0]+'<small>'+f[1]+'</small></div>'+
     '<div class="name">'+pill+esc(p.name)+'</div>'+
     '<div class="meta"><b>'+esc(p.ville)+'</b> · '+esc(p.adr)+'<br>Activité '+esc(p.naf)+(p.creat?" · depuis "+esc(String(p.creat).slice(0,4)):"")+'</div>'+
-    '<div class="acts"><a class="go" href="'+nav+'" target="_blank" rel="noopener">Itinéraire</a>'+acts+'</div></li>';
+    '<div class="acts"><a class="go" href="'+nav+'" target="_blank" rel="noopener">Itinéraire</a>'+tel+acts+'</div></li>';
 }
 function render(){
   var all=visible();
@@ -280,6 +286,12 @@ function drawMap(all){
 }
 
 /* ---------- actions ---------- */
+function editPhone(id){
+  var v=window.prompt("Numéro de téléphone (laisse vide pour l'effacer)",phones[id]||"");
+  if(v===null) return; v=v.trim();
+  if(v) phones[id]=v; else delete phones[id];
+  save(KEY_PH,phones); render();
+}
 function mark(id,a){
   if(a==="reset"){delete db[id]}
   else{var c=cache[id]||{};db[id]={s:a,n:c.name||(db[id]&&db[id].n)||"",c:c.ville||(db[id]&&db[id].c)||"",t:Date.now()}}
@@ -344,16 +356,16 @@ $("btnTest").onclick=function(){
   if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}
   testMode=true;pos={lat:48.0794,lon:7.3585,acc:0};lastFetch=null;$("btnStart").textContent="Actualiser maintenant";fetchAround();
 };
-$("list").addEventListener("click",function(e){var b=e.target.closest("button[data-a]");if(b)mark(b.getAttribute("data-id"),b.getAttribute("data-a"))});
+$("list").addEventListener("click",function(e){var b=e.target.closest("button[data-a]");if(!b) return; var a=b.getAttribute("data-a"), id=b.getAttribute("data-id"); if(a==="phone") editPhone(id); else mark(id,a)});
 [["tabNear","near"],["tabVisit","visit"],["tabSeen","seen"],["tabMap","map"]].forEach(function(t){$(t[0]).onclick=function(){tab=t[1];render()}});
 $("btnExport").onclick=function(){
-  var blob=new Blob([JSON.stringify(db,null,1)],{type:"application/json"}),a=document.createElement("a");
+  var blob=new Blob([JSON.stringify({db:db,phones:phones},null,1)],{type:"application/json"}),a=document.createElement("a");
   a.href=URL.createObjectURL(blob);a.download="prospects-connus.json";document.body.appendChild(a);a.click();a.remove();
 };
 $("btnImport").onclick=function(){$("fileImport").click()};
 $("fileImport").onchange=function(){
   var f=this.files[0];if(!f)return;var r=new FileReader();
-  r.onload=function(){try{var o=JSON.parse(r.result);for(var k in o)if(o[k]&&o[k].s)db[k]=o[k];save(KEY_DB,db);render();say("Base importée : "+Object.keys(o).length+" entrées.")}catch(e){say("Fichier illisible.",true)}};
+  r.onload=function(){try{var o=JSON.parse(r.result), d=o.db||o, p=o.phones||{}, n=0;for(var k in d)if(d[k]&&d[k].s){db[k]=d[k];n++}for(var q in p)phones[q]=p[q];save(KEY_DB,db);save(KEY_PH,phones);render();say("Base importée : "+n+" prospect(s) et "+Object.keys(p).length+" numéro(s).")}catch(e){say("Fichier illisible.",true)}};
   r.readAsText(f);
 };
 
